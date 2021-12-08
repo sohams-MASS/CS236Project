@@ -1,0 +1,35 @@
+import gym
+from gym import spaces
+from expert.dataset import rewardfunction
+from expert.dataset import sample, current_champion_Select
+
+class LeagueDraftEnv(gym.Env):
+  """Custom Environment that follows gym interface"""
+  metadata = {'render.modes': ['human']}
+
+  def __init__(self,draft):
+    super(LeagueDraftEnv, self).__init__()
+    Actions = range(1,157)
+    self.action_space = spaces.Discrete(Actions)
+    self.reward_range = (0, 3) 
+    self.action_space = spaces.Box(
+      low=np.array([0, 0]), high=np.array([3, 1]), dtype= np.float16)
+    self.observation_space = spaces.Box(
+      low=0, high=1, shape=(6, 6), dtype = np.float16)
+    self.draft = spaces.Box(low = 0, high = 20, shape = (1,20), dtype = np.float16)
+ 
+
+  def step(self, action):
+    self.current_step +=1
+    reward = rewardfunction(self.draft)
+    done = self.current_step == 20
+    obs = self._next_observation()
+  def reset(self):
+    self.draft = None
+    self.sample = sample(current_champion_Select)
+    
+  def render(self, mode='human', close=False):
+    # Render the environment to the screen
+    print(f'Step: {self.current_step}')
+    print(f'Draft: {self.draft}')
+    
