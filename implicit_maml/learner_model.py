@@ -30,13 +30,7 @@ class Learner:
         #if GPU:
         #    self.model.cuda()
         assert outer_alg == 'sgd' or 'adam'
-        #self.model.actor.inner_opt = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
-        #self.model.critic.inner_opt = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
-        #if outer_alg == 'adam':
-        #    self.outer_opt = torch.optim.Adam(self.model.parameters(), lr=outer_lr, eps=1e-3)
-        #else:
-        #    self.outer_opt = torch.optim.SGD(self.model.parameters(), lr=outer_lr)
-        #self.loss_function = loss_function
+    
         #assert inner_alg == 'gradient' # sqp unsupported in this version
         self.inner_alg = inner_alg
 
@@ -97,284 +91,31 @@ class Learner:
     def learn_on_data(self, env_args, env,eval_env,args,expert_memory_replay, num_steps=10,
                       add_regularization=False,
                       w_0=None, lam=0.0):
-        num_iters = self.train_config["num_iters"]
-        num_steps_per_iter = self.train_config["num_steps_per_iter"]
-        horizon = self.train_config["horizon"]
-        lambda_ = self.train_config["lambda"]
-        gae_gamma = self.train_config["gae_gamma"]
-        gae_lambda = self.train_config["gae_lambda"]
-        eps = self.train_config["epsilon"]
-        max_kl = self.train_config["max_kl"]
-        cg_damping = self.train_config["cg_damping"]
-        normalize_advantage = self.train_config["normalize_advantage"]
-
-        opt_d = torch.optim.Adam(self.d.parameters())
-
-        exp_rwd_iter = []
-
-        exp_obs = []
-        exp_acts = []
-
-        steps = 0
-        while steps < num_steps_per_iter:
-            ep_obs = []
-            ep_rwds = []
-
-            t = 0
-            done = False
-
-            ob = env.reset()
-
-            while not done and steps < num_steps_per_iter:
-                act = expert.act(ob)
-
-                ep_obs.append(ob)
-                exp_obs.append(ob)
-                exp_acts.append(act)
-
-                if render:
-                    env.render()
-                ob, rwd, done, info = env.step(act)
-
-                ep_rwds.append(rwd)
-
-                t += 1
-                steps += 1
-
-                if horizon is not None:
-                    if t >= horizon:
-                        done = True
-                        break
-
-            if done:
-                exp_rwd_iter.append(np.sum(ep_rwds))
-
-            ep_obs = FloatTensor(np.array(ep_obs))
-            ep_rwds = FloatTensor(ep_rwds)
-
-        exp_rwd_mean = np.mean(exp_rwd_iter)
-        print(
-            "Expert Reward Mean: {}".format(exp_rwd_mean)
-        )
-
-        exp_obs = FloatTensor(np.array(exp_obs))
-        exp_acts = FloatTensor(np.array(exp_acts))
-
-        rwd_iter_means = []
-        for i in range(num_iters):
-            rwd_iter = []
-
-            obs = []
-            acts = []
-            rets = []
-            advs = []
-            gms = []
-
-            steps = 0
-            while steps < num_steps_per_iter:
-                ep_obs = []
-                ep_acts = []
-                ep_rwds = []
-                ep_costs = []
-                ep_disc_costs = []
-                ep_gms = []
-                ep_lmbs = []
-
-                t = 0
-                done = False
-
-                ob = env.reset()
-
-                while not done and steps < num_steps_per_iter:
-                    act = self.act(ob)
-
-                    ep_obs.append(ob)
-                    obs.append(ob)
-
-                    ep_acts.append(act)
-                    acts.append(act)
-
-                    if render:
-                        env.render()
-                    ob, rwd, done, info = env.step(act)
-
-                    ep_rwds.append(rwd)
-                    ep_gms.append(gae_gamma ** t)
-                    ep_lmbs.append(gae_lambda ** t)
-
-                    t += 1
-                    steps += 1
-
-                    if horizon is not None:
-                        if t >= horizon:
-                            done = True
-                            break
-
-                if done:
-                    rwd_iter.append(np.sum(ep_rwds))
-
-                ep_obs = FloatTensor(np.array(ep_obs))
-                ep_acts = FloatTensor(np.array(ep_acts))
-                ep_rwds = FloatTensor(ep_rwds)
-                # ep_disc_rwds = FloatTensor(ep_disc_rwds)
-                ep_gms = FloatTensor(ep_gms)
-                ep_lmbs = FloatTensor(ep_lmbs)
-
-                ep_costs = (-1) * torch.log(self.d(ep_obs, ep_acts))\
-                    .squeeze().detach()
-                ep_disc_costs = ep_gms * ep_costs
-
-                ep_disc_rets = FloatTensor(
-                    [sum(ep_disc_costs[i:]) for i in range(t)]
-                )
-                ep_rets = ep_disc_rets / ep_gms
-
-                rets.append(ep_rets)
-
-                self.v.eval()
-                curr_vals = self.v(ep_obs).detach()
-                next_vals = torch.cat(
-                    (self.v(ep_obs)[1:], FloatTensor([[0.]]))
-                ).detach()
-                ep_deltas = ep_costs.unsqueeze(-1)\
-                    + gae_gamma * next_vals\
-                    - curr_vals
-
-                ep_advs = FloatTensor([
-                    ((ep_gms * ep_lmbs)[:t - j].unsqueeze(-1) * ep_deltas[j:])
-                    .sum()
-                    for j in range(t)
-                ])
-                advs.append(ep_advs)
-
-                gms.append(ep_gms)
-
-            rwd_iter_means.append(np.mean(rwd_iter))
-            print(
-                "Iterations: {},   Reward Mean: {}"
-                .format(i + 1, np.mean(rwd_iter))
-            )
-
-            obs = FloatTensor(np.array(obs))
-            acts = FloatTensor(np.array(acts))
-            rets = torch.cat(rets)
-            advs = torch.cat(advs)
-            gms = torch.cat(gms)
-
-            if normalize_advantage:
-                advs = (advs - advs.mean()) / advs.std()
-
-            self.d.train()
-            exp_scores = self.d.get_logits(exp_obs, exp_acts)
-            nov_scores = self.d.get_logits(obs, acts)
-
-            opt_d.zero_grad()
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                exp_scores, torch.zeros_like(exp_scores)
-            ) \
-                + torch.nn.functional.binary_cross_entropy_with_logits(
-                    nov_scores, torch.ones_like(nov_scores)
-                )
-            loss.backward()
-            opt_d.step()
-
-            self.v.train()
-            old_params = get_flat_params(self.v).detach()
-            old_v = self.v(obs).detach()
-
-            def constraint():
-                return ((old_v - self.v(obs)) ** 2).mean()
-
-            grad_diff = get_flat_grads(constraint(), self.v)
-
-            def Hv(v):
-                hessian = get_flat_grads(torch.dot(grad_diff, v), self.v)\
-                    .detach()
-
-                return hessian
-
-            g = get_flat_grads(
-                ((-1) * (self.v(obs).squeeze() - rets) ** 2).mean(), self.v
-            ).detach()
-            s = conjugate_gradient(Hv, g).detach()
-
-            Hs = Hv(s).detach()
-            alpha = torch.sqrt(2 * eps / torch.dot(s, Hs))
-
-            new_params = old_params + alpha * s
-
-            set_params(self.v, new_params)
-
-            self.pi.train()
-            old_params = get_flat_params(self.pi).detach()
-            old_distb = self.pi(obs)
-
-            def L():
-                distb = self.pi(obs)
-
-                return (advs * torch.exp(
-                            distb.log_prob(acts)
-                            - old_distb.log_prob(acts).detach()
-                        )).mean()
-
-            def kld():
-                distb = self.pi(obs)
-
-                if self.discrete:
-                    old_p = old_distb.probs.detach()
-                    p = distb.probs
-
-                    return (old_p * (torch.log(old_p) - torch.log(p)))\
-                        .sum(-1)\
-                        .mean()
-
-                else:
-                    old_mean = old_distb.mean.detach()
-                    old_cov = old_distb.covariance_matrix.sum(-1).detach()
-                    mean = distb.mean
-                    cov = distb.covariance_matrix.sum(-1)
-
-                    return (0.5) * (
-                            (old_cov / cov).sum(-1)
-                            + (((old_mean - mean) ** 2) / cov).sum(-1)
-                            - self.action_dim
-                            + torch.log(cov).sum(-1)
-                            - torch.log(old_cov).sum(-1)
-                        ).mean()
-
-            grad_kld_old_param = get_flat_grads(kld(), self.pi)
-
-            def Hv(v):
-                hessian = get_flat_grads(
-                    torch.dot(grad_kld_old_param, v),
-                    self.pi
-                ).detach()
-
-                return hessian + cg_damping * v
-
-            g = get_flat_grads(L(), self.pi).detach()
-
-            s = conjugate_gradient(Hv, g).detach()
-            Hs = Hv(s).detach()
-
-            new_params = rescale_and_linesearch(
-                g, s, Hs, max_kl, L, kld, old_params, self.pi
-            )
-
-            disc_causal_entropy = ((-1) * gms * self.pi(obs).log_prob(acts))\
-                .mean()
-            grad_disc_causal_entropy = get_flat_grads(
-                disc_causal_entropy, self.pi
-            )
-            new_params += lambda_ * grad_disc_causal_entropy
-
-            set_params(self.pi, new_params)
-
-        return exp_rwd_mean, rwd_iter_means
+        for epoch in range(1, n_epochs+1):
+        # update policy n_iter times
+        policy.update(n_iter, batch_size)
         
+        # evaluate in environment
+        total_reward = 0
+        for episode in range(n_eval_episodes):
+            state = env.reset()
+            for t in range(max_timesteps):
+                action = policy.select_action(state)
+                state, reward, done, _ = env.step(action)
+                total_reward += reward
+                if done:
+                    break
                 
-  
-
+        avg_reward = int(total_reward/n_eval_episodes)
+        print("Epoch: {}\tAvg Reward: {}".format(epoch, avg_reward))
+        
+        # add data for graph
+        epochs.append(epoch)
+        rewards.append(avg_reward)
+        
+        if avg_reward > solved_reward:
+            print("########### Solved! ###########")
+            policy.save(directory, filename)
 
     def learn_task(self, expert_memory_replay, env_args, env, eval_env, args, num_steps, add_regularization=False, w_0=None, lam=0.0):
         REPLAY_MEMORY = int(env_args.replay_mem)
@@ -397,7 +138,7 @@ class Learner:
 
 
 
-    def matrix_evaluator(self, loss_type, env,args, expert_memory_replay, EPISODE_STEPS, REPLAY_MEMORY, INITIAL_MEMORY, fast_learner,task, lam, regu_coef=1.0, lam_damping=10.0, x=None, y=None):
+    def matrix_evaluator(self, loss_type, env,args):
         """
         Constructor function that can be given to CG optimizer
         Works for both type(lam) == float and type(lam) == np.ndarray
@@ -405,7 +146,7 @@ class Learner:
         if type(lam) == np.ndarray:
             lam = utils.to_device(lam, self.use_gpu)
         def evaluator(v):
-            hvp = self.hessian_vector_product(task,loss_type, env, args, expert_memory_replay, EPISODE_STEPS, REPLAY_MEMORY, INITIAL_MEMORY, fast_learner, v, x=x, y=y)
+            hvp = self.hessian_vector_product(task,loss_type)
             Av = (1.0 + regu_coef) * v + hvp / (lam + lam_damping)
             return Av
         return evaluator
@@ -414,71 +155,15 @@ class Learner:
         """
         Performs hessian vector product on the train set in task with the provided vector
         """
-        if x is not None and y is not None:
-            online_memory_replay = get_buffers(env, args,EPISODE_STEPS, REPLAY_MEMORY, INITIAL_MEMORY, fast_learner)    
+        if x is not None and y is not None: 
         else:
-            online_memory_replay = get_buffers(env, args,EPISODE_STEPS, REPLAY_MEMORY, INITIAL_MEMORY, fast_learner)
-        policy_batch = online_memory_replay.get_samples(args.train.batch, args.device)
-        expert_batch = expert_memory_replay.get_samples(args.train.batch, args.device)
-        critic_loss, actor_loss, alpha_loss = self.get_loss(args, policy_batch, expert_batch)
-        if loss_type == 'critic':
-            tloss = critic_loss
-            grad_ft = torch.autograd.grad(tloss, self.model.critic.parameters(), create_graph=True)
-            flat_grad = torch.cat([g.contiguous().view(-1) for g in grad_ft])
-            vec = utils.to_device(vector, self.use_gpu)
-            h = torch.sum(flat_grad * vec)
-            hvp = torch.autograd.grad(h, self.model.critic.parameters(),retain_graph=True)
-            hvp_flat = torch.cat([g.contiguous().view(-1) for g in hvp])
-
-        elif loss_type == 'actor':
-            tloss = actor_loss
-            grad_ft = torch.autograd.grad(tloss, self.model.actor.parameters(), create_graph=True)
-            flat_grad = torch.cat([g.contiguous().view(-1) for g in grad_ft])
-            vec = utils.to_device(vector, self.use_gpu)
-            h = torch.sum(flat_grad * vec)
-            hvp = torch.autograd.grad(h, self.model.actor.parameters(),retain_graph=True)
-            hvp_flat = torch.cat([g.contiguous().view(-1) for g in hvp])
-        else:
-            tloss = alpha_loss
-            grad_ft = torch.autograd.grad(alpha_loss, self.model.log_alpha, create_graph = True)
-            flat_grad = torch.cat([g.contiguous().view(-1) for g in grad_ft])
-            vec = utils.to_device(vector, self.use_gpu)
-            h = torch.sum(flat_grad * vec)
-            hvp = torch.autograd.grad(h, self.model.log_alpha,retain_graph=True)
             hvp_flat = torch.cat([g.contiguous().view(-1) for g in hvp])
         return hvp_flat
 
-
-def make_fc_network(in_dim=1, out_dim=1, hidden_sizes=(40,40), float16=False):
-    non_linearity = nn.ReLU()
-    model = nn.Sequential()
-    model.add_module('fc_0', nn.Linear(in_dim, hidden_sizes[0]))
-    model.add_module('nl_0', non_linearity)
-    model.add_module('fc_1', nn.Linear(hidden_sizes[0], hidden_sizes[1]))
-    model.add_module('nl_1', non_linearity)
-    model.add_module('fc_2', nn.Linear(hidden_sizes[1], out_dim))
-    if float16:
-        return model.half()
-    else:
-        return model
-
     
-def make_SAC_network(args, task='PickPlaceMetaWorld'):
-    assert task == 'PickPlaceMetaWorld'
-    
-    if task == 'PickPlaceMetaWorld':
-        env = make_env(args)
-        model= make_agent(env, args)
-    
+def make_GAIL_network(args):
+        env = make_env('LeageDraftEnv')
+        model = GAIL(env_name, state_dim, action_dim, max_action, lr, betas)
     return model
 
-
-class Flatten(nn.Module):
-    def forward(self, x):
-        x = x.view(x.size()[0], -1)
-        return x
-
-    
-def model_imagenet_arch(in_channels, out_dim, num_filters=32, batch_norm=True, bias=True):
-    raise NotImplementedError
 
